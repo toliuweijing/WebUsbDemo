@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- This is an example vendor ID. Replace with the actual vendor ID of your device. -->
+    <usb-device vendor-id="4310" />
+</resources>
