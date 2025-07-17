@@ -36,8 +36,13 @@ class WebUsbConnectionManager(private val context: Context) {
         private set // Only this class can modify the status directly
 
     // Internal state for the active USB connection and interface
+    private var connectedUsbDevice: UsbDevice? by mutableStateOf(null)
     private var usbDeviceConnection: UsbDeviceConnection? by mutableStateOf(null)
     private var usbInterface: UsbInterface? by mutableStateOf(null)
+
+    // Observable state for current connection status (true if connected, false otherwise)
+    var isConnected: MutableState<Boolean> = mutableStateOf(false)
+        private set
 
     // BroadcastReceiver to handle USB permission results
     private val usbPermissionReceiver = object : BroadcastReceiver() {
@@ -61,13 +66,44 @@ class WebUsbConnectionManager(private val context: Context) {
         }
     }
 
+    // BroadcastReceiver to handle USB device detachment
+    private val usbDetachReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (UsbManager.ACTION_USB_DEVICE_DETACHED == intent.action) {
+                val detachedDevice: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                }
+
+                // Check if the detached device is the one we are currently connected to
+                if (detachedDevice != null && connectedUsbDevice?.deviceName == detachedDevice.deviceName) {
+                    Log.d("WebUsbConnectionManager", "Detected detachment of connected device: ${detachedDevice.deviceName}")
+                    disconnectDevice() // Call the existing disconnect logic
+                    connectionStatus.value = "Disconnected: Device detached"
+                } else {
+                    Log.d("WebUsbConnectionManager", "A device detached: ${detachedDevice?.deviceName ?: "Unknown"}, but not the connected one.")
+                }
+            }
+        }
+    }
+
     init {
         // Register the permission receiver when the manager is initialized
-        val filter = IntentFilter(ACTION_USB_PERMISSION)
+        val permissionFilter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(usbPermissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            context.registerReceiver(usbPermissionReceiver, permissionFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
-            context.registerReceiver(usbPermissionReceiver, filter)
+            context.registerReceiver(usbPermissionReceiver, permissionFilter)
+        }
+
+        // Register the detach receiver
+        val detachFilter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(usbDetachReceiver, detachFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(usbDetachReceiver, detachFilter)
         }
     }
 
@@ -122,7 +158,9 @@ class WebUsbConnectionManager(private val context: Context) {
 
         if (connection.claimInterface(foundInterface, true)) {
             this.usbDeviceConnection = connection
+            this.connectedUsbDevice = device
             connectionStatus.value = "Connected to ${device.deviceName}"
+            isConnected.value = true
         } else {
             connectionStatus.value = "Error: Could not claim interface."
             Log.e("WebUsbConnectionManager", "claimInterface() returned false.")
@@ -139,7 +177,9 @@ class WebUsbConnectionManager(private val context: Context) {
         usbDeviceConnection?.close()
         usbDeviceConnection = null
         usbInterface = null
+        connectedUsbDevice = null
         connectionStatus.value = "Disconnected"
+        isConnected.value = false
     }
 
     /**
@@ -148,6 +188,7 @@ class WebUsbConnectionManager(private val context: Context) {
      */
     fun release() {
         context.unregisterReceiver(usbPermissionReceiver)
+        context.unregisterReceiver(usbDetachReceiver) // Unregister the detach receiver
         disconnectDevice() // Ensure device is disconnected on release
     }
 }
