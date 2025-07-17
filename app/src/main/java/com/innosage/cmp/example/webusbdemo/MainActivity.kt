@@ -5,7 +5,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
+import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
@@ -25,16 +28,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.hoho.android.usbserial.driver.UsbSerialPort
-import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.innosage.cmp.example.webusbdemo.ui.theme.WebUsbDemoTheme
-import java.io.IOException
 
 private const val ACTION_USB_PERMISSION = "com.innosage.cmp.example.webusbdemo.USB_PERMISSION"
 
 class MainActivity : ComponentActivity() {
     private lateinit var usbManager: UsbManager
-    private var usbSerialPort: UsbSerialPort? by mutableStateOf(null)
+    private var usbDeviceConnection: UsbDeviceConnection? by mutableStateOf(null)
+    private var usbInterface: UsbInterface? by mutableStateOf(null)
+    private val connectionStatus = mutableStateOf("Disconnected")
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -49,6 +51,7 @@ class MainActivity : ComponentActivity() {
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         device?.let { connectToDevice(it) }
                     } else {
+                        connectionStatus.value = "Permission denied for device ${device?.deviceName}"
                         Log.d("MainActivity", "Permission denied for device $device")
                     }
                 }
@@ -91,7 +94,6 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun MainScreen() {
         val discoveredDevices = remember { mutableStateOf<List<UsbDevice>>(emptyList()) }
-        val connectionStatus = remember { mutableStateOf("Disconnected") }
 
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
             Column(
@@ -108,7 +110,7 @@ class MainActivity : ComponentActivity() {
                 Text("Status: ${connectionStatus.value}")
                 Spacer(modifier = Modifier.height(16.dp))
 
-                if (usbSerialPort == null) {
+                if (usbDeviceConnection == null) {
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
                         items(discoveredDevices.value) { device ->
                             Row(
@@ -139,40 +141,56 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connectToDevice(device: UsbDevice) {
-        val permissionIntent = PendingIntent.getBroadcast(
-            this, 0, Intent(ACTION_USB_PERMISSION),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0
-        )
-        usbManager.requestPermission(device, permissionIntent)
+        if (!usbManager.hasPermission(device)) {
+            val permissionIntent = PendingIntent.getBroadcast(
+                this, 0, Intent(ACTION_USB_PERMISSION),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0
+            )
+            usbManager.requestPermission(device, permissionIntent)
+            return
+        }
 
-        if (usbManager.hasPermission(device)) {
-            val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
-            val driver = drivers.firstOrNull { it.device == device }
-            if (driver != null) {
-                val connection = usbManager.openDevice(driver.device)
-                if (connection != null) {
-                    val port = driver.ports[0]
-                    try {
-                        port.open(connection)
-                        port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-                        usbSerialPort = port
-                    } catch (e: IOException) {
-                        Log.e("MainActivity", "Error opening port", e)
-                        disconnectDevice()
-                    }
-                }
+        var foundInterface: UsbInterface? = null
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i)
+            // For WebUSB, the class is often vendor-specific.
+            // You might need to adjust this check based on your device's descriptors.
+            if (iface.interfaceClass == UsbConstants.USB_CLASS_VENDOR_SPEC) {
+                foundInterface = iface
+                break
             }
+        }
+
+        if (foundInterface == null) {
+            connectionStatus.value = "Error: No suitable interface found."
+            Log.e("MainActivity", "Could not find a suitable interface for the device.")
+            return
+        }
+
+        this.usbInterface = foundInterface
+        val connection = usbManager.openDevice(device)
+        if (connection == null) {
+            connectionStatus.value = "Error: Could not open device."
+            Log.e("MainActivity", "usbManager.openDevice() returned null.")
+            return
+        }
+
+        if (connection.claimInterface(foundInterface, true)) {
+            this.usbDeviceConnection = connection
+            connectionStatus.value = "Connected to ${device.deviceName}"
+        } else {
+            connectionStatus.value = "Error: Could not claim interface."
+            Log.e("MainActivity", "claimInterface() returned false.")
+            connection.close()
         }
     }
 
     private fun disconnectDevice() {
-        try {
-            usbSerialPort?.close()
-        } catch (e: IOException) {
-            Log.e("MainActivity", "Error closing port", e)
-        } finally {
-            usbSerialPort = null
-        }
+        usbDeviceConnection?.releaseInterface(usbInterface)
+        usbDeviceConnection?.close()
+        usbDeviceConnection = null
+        usbInterface = null
+        connectionStatus.value = "Disconnected"
     }
 }
 
