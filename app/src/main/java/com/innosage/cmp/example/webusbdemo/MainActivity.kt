@@ -1,5 +1,6 @@
 package com.innosage.cmp.example.webusbdemo
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
     fun MainScreen() {
         // Observe the connection status from the manager
         val connectionStatus by webUsbConnectionManager.connectionStatus
+        val isConnected by webUsbConnectionManager.isConnected
         val discoveredDevices = remember { mutableStateOf<List<android.hardware.usb.UsbDevice>>(emptyList()) }
 
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -56,15 +58,14 @@ class MainActivity : ComponentActivity() {
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Button(onClick = { discoveredDevices.value = webUsbConnectionManager.discoverUsbDevices() }) {
-                    Text("Discover WebUSB Devices")
-                }
-                Spacer(modifier = Modifier.height(16.dp))
                 Text("Status: $connectionStatus")
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Only show device list if not connected
-                if (connectionStatus == "Disconnected" || connectionStatus.startsWith("Error")) {
+                if (!isConnected) {
+                    Button(onClick = { discoveredDevices.value = webUsbConnectionManager.discoverUsbDevices() }) {
+                        Text("Discover WebUSB Devices")
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
                         items(discoveredDevices.value) { device ->
                             Row(
